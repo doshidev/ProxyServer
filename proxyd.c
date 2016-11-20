@@ -34,29 +34,51 @@ struct Request {
 	char reqFile[2083];
 	char reqPort[10];
 	char reqAction[100];
+	char dataDomain[255];
+	int datafd;
+	char dataPort[100];
 	struct addrinfo *svrInetAddr;
+	struct addrinfo	*dataInetAddr;
 	struct addrinfo hints;
 	int serverfd;
 	char resBuf[10000000];
 	int resrecd;
 };
 
+struct Command {
+	char cmd[200];
+	char response[1500];
+	char rcode[10];
+	char rtext[200];
+};
+
+struct HttpOK {
+	char code[10];
+	time_t rawtime;
+   	struct tm *info;
+   	char length[20];
+   	char contenttype[50];
+   	char modified[20];
+   	char fullresponse[200];
+};
 
 int checkPort(int proxyPort); 
 int startServer(int proxyPort);
 int connectServer(struct sockaddr* saddr, size_t saddrlen);
 void parseheader(struct Request* rptr);
-int getai(struct Request* rptr);
+int getai(struct Request* rptr, char type);
 int sendr(struct Request* rptr);
 int sendf(int fd, char cmd[]);
-void rw(struct Request* rptr);
+void rw(struct Request* rptr, int rfd);
 int sel(int fd);
 int selw(int fd);
+void buildResponse(struct HttpOK * r);
 
 
 int main(int argc, char **argv){
 	int fd = 0, r = 0, portno;
 	portno = atoi(argv[1]);
+	char ftpresponse[1500];
 
 	/* 1. Check Arguments */
 	if(argc != 2 || checkPort(atoi(argv[1])) == 0)
@@ -111,13 +133,13 @@ int main(int argc, char **argv){
 			
 			if(strcmp(req->reqAction, "GET") == 0){
 				/* 6. Get Addr Info */
-				int gainfo = getai(req);
+				int gainfo = getai(req, 's');
 				if(gainfo != 0){
 					printf("Get Address Info failed\n");
 					close(req->browserfd);			
 					break;
 				}
-				printf("Get Address Info successful\n");
+				printf("> Get Address Info successful\n");
 
 				/* 7. Connect to Destination Server */
 				req->serverfd = connectServer(req->svrInetAddr->ai_addr, req->svrInetAddr->ai_addrlen);
@@ -135,11 +157,74 @@ int main(int argc, char **argv){
 						break;	
 					}
 					/* 9. Read & Write */
-					rw(req);	
+					rw(req, req->serverfd);	
 				} else if(strcmp(req->reqType, "ftp") == 0){
+					/* Server Connect and Response */
+					read(req->serverfd, ftpresponse, 1500);
+					printf("\n> FTP Response: %s\n", ftpresponse);
+
+					/* TODO: check if response is 220? */
+
+					/* USER */
+					struct Command comm;
+					bzero(&comm, sizeof(comm));
+					strcpy(comm.cmd, "USER anonymous\r\n");
+					talk(&comm, req);
+
+					/* TODO: check response codes */
+
+					/* PASSWORD */
+					bzero(&comm, sizeof(comm));
+					strcpy(comm.cmd, "PASS user@example.com\r\n");
+					talk(&comm, req);
 					
-				}
-			}
+					/* SIZE */
+					bzero(&comm, sizeof(comm));
+					strcpy(comm.cmd, "SIZE /");
+					strcat(comm.cmd, req->reqFile);
+					strcat(comm.cmd, "\r\n");
+					talk(&comm, req);
+					
+
+					/* PASV */
+					bzero(&comm, sizeof(comm));
+					strcpy(comm.cmd, "PASV\r\n");
+					talk(&comm, req);
+					parsePasv(&comm, req);
+
+					/* Get Addr Info */
+					int gainfo1 = getai(req, 'd');
+					if(gainfo1 != 0){
+						printf("Get Address Info failed\n");
+						close(req->browserfd);			
+						break;
+					}
+					printf("\n> Data Get Address Info successful\n");
+					/* Connect to Data Server */
+					req->datafd = connectServer(req->dataInetAddr->ai_addr, req->dataInetAddr->ai_addrlen);			
+					if(req->datafd == -1){
+						printf("Connection to Data server failed\n");
+						close(req->browserfd);			
+						break;
+					}
+
+					/* RETR */
+					bzero(&comm, sizeof(comm));
+					strcpy(comm.cmd, "RETR /");
+					strcat(comm.cmd, req->reqFile);
+					strcat(comm.cmd, "\r\n");
+					talk(&comm, req);
+
+					struct HttpOK h;
+					buildResponse(&h);
+					printf("HTTP: %s\n", h.fullresponse);
+					
+					write(req->browserfd, &h.fullresponse, strlen(h.fullresponse));
+					rw(req, req->datafd);	
+
+				} // else if "ftp"
+
+			} // if "GET"
 			
 		} // end if (bytesrecd > 0)
 	} // End for		
@@ -205,7 +290,6 @@ int startServer(int proxyPort){
  * @return int server file descriptor
  */
 int connectServer(struct sockaddr* saddr, size_t saddrlen){
-	
 	/* Socket: creating new interface */	
 	int sd = socket(AF_INET, SOCK_STREAM, 0);
 	if(sd == -1){
@@ -219,6 +303,7 @@ int connectServer(struct sockaddr* saddr, size_t saddrlen){
 		return -1;
 	}
 	printf("> Connected to destination server successfully\n");	
+	printf("SD: %d\n", sd);
 	return sd;
 }
 
@@ -282,10 +367,13 @@ void parseheader(struct Request* rptr){
  * This function will resolve inet addr of the server 
  * @param struct Request * rptr
  */
-int getai(struct Request* rptr){
+int getai(struct Request* rptr, char type){
 	rptr->hints.ai_family = INADDR_ANY ; 				
 	rptr->hints.ai_socktype = SOCK_STREAM;
-	return getaddrinfo(rptr->reqDomain, rptr->reqPort, &rptr->hints, &rptr->svrInetAddr);
+	if(type == 's')
+		return getaddrinfo(rptr->reqDomain, rptr->reqPort, &rptr->hints, &rptr->svrInetAddr);
+	if(type == 'd')
+		return getaddrinfo(rptr->dataDomain, rptr->dataPort, &rptr->hints, &rptr->dataInetAddr);
 }
 
 /* sendr()
@@ -298,27 +386,17 @@ int sendr(struct Request* rptr){
 }
 
 
-/* sendf()
- * This function will send the commands for ftp request 
- * @param struct Request * rptr
- */
-int sendf(int fd, char cmd[]){
-	int cmlen = strlen(cmd);
-	return send(fd, &cmd, cmlen, 0);
-}
-
-
 /* rw()
  * This function will read the response from server and send it to the client 
  * @param struct Request * rptr
  */
-void rw(struct Request* rptr){
+void rw(struct Request* rptr, int rfd){
 	rptr->resrecd = 0;
-	if(sel(rptr->serverfd) > 0 && selw(rptr->browserfd) > 0){
+	if(sel(rfd) > 0 && selw(rptr->browserfd) > 0){
 		again:
 		do {    
 	    	bzero(rptr->resBuf, strlen(rptr->resBuf));
-	    	rptr->resrecd = read(rptr->serverfd, rptr->resBuf, 10000000);
+	    	rptr->resrecd = read(rfd, rptr->resBuf, 10000000);
 			// printf("%s\n", rptr->resBuf);
 			printf(" [r: %d] ", rptr->resrecd);
 			write(rptr->browserfd, &rptr->resBuf, rptr->resrecd);
@@ -334,7 +412,7 @@ void rw(struct Request* rptr){
 
 /* sel()
  * This function will use the select function to check if the fd is ready to read/write 
- * @param struct Request * rptr
+ * @param int fd
  */
 int sel(int fd){
 	int fdplus, rv = 0;
@@ -361,7 +439,7 @@ int sel(int fd){
 
 /* selw()
  * This function will use the select function to check if the fd is ready to read/write 
- * @param struct Request * rptr
+ * @param int fd
  */
 int selw(int fd){
 	int fdplus, rv = 0;
@@ -384,3 +462,160 @@ int selw(int fd){
 		return 0;
 	return rv;
 }
+
+/* talk()
+ * This function will talk to FTP server - send command and read response
+ * @param struct Command * rptr
+ * @param struct Request * rptr
+ */
+int talk(struct Command* ftpcmd, struct Request* rptr){
+	char rstring[1500];
+	char check1[4], check2[4];
+	int i = 0, loop = 0;
+	bzero(rstring, sizeof(rstring));
+	bzero(check1, 4);
+	bzero(check2, 4);
+	
+	printf("[C]: %s", ftpcmd->cmd);
+	
+	/* Send Command */
+	if(send(rptr->serverfd, ftpcmd->cmd, strlen(ftpcmd->cmd), 0) == -1){
+		printf("Send Error\n");
+		return -1;
+	}
+	/* Read Response*/
+	do{
+		bzero(rstring, sizeof(rstring));
+		if( read(rptr->serverfd, rstring, 5000) <= 0){
+			printf("Read Error\n");
+			break;
+			return -1;
+		}
+		// printf("Response: %s", rstring);
+		memcpy(check1, rstring, 3);	
+		for(i = 0; i < strlen(rstring); i++){
+			if(rstring[i] == ' '){
+				memcpy(check2, rstring+i-3, 3);
+			}
+			if(strcmp(check1, check2) == 0){
+				loop = 1;
+				break;
+			}
+		}
+	} while(loop < 1);
+	
+	
+	strcpy(ftpcmd->response, rstring);
+	printf("[S]: %s", ftpcmd->response);
+
+	/* Parse Response */
+	memcpy(ftpcmd->rcode, ftpcmd->response, 3);	
+	memcpy(ftpcmd->rtext, ftpcmd->response+4, strlen(ftpcmd->response));	
+
+	return atoi(ftpcmd->rcode);
+}
+
+
+/* parsePasv()
+ * This function will use the select function to check if the fd is ready to read/write 
+ * @param struct Command * rptr
+ * @param struct Request * rptr
+ */
+int parsePasv(struct Command* ftpcmd, struct Request* rptr){
+	int i = 0, start, count = 0, port = 0;
+	char ip[20];
+	char octet[4];
+	char port1[4], port2[4];
+	for(i=0; i < strlen(ftpcmd->rtext); i++){
+		if(ftpcmd->rtext[i] == '(')
+			start = i + 1;
+
+		if(ftpcmd->rtext[i] == ',' && start > 0){
+			if(count <= 3){
+				memcpy(octet, ftpcmd->rtext+start, i - start);	
+				
+				if(strlen(ip) > 0){
+					strcat(ip, octet);
+				} else {
+					strcpy(ip, octet);
+				}
+				
+				if(count <= 2)
+					strcat(ip, ".");
+
+				start = i + 1;
+				count++;
+				bzero(&octet, 4);
+			} else {
+				memcpy(port1, ftpcmd->rtext+start, i - start);	
+				start = i + 1;
+				count++;
+			}
+			
+		} else if(ftpcmd->rtext[i] == ')'){
+			memcpy(port2, ftpcmd->rtext+start, i - start);
+			break;
+		} 
+
+	} // end for
+	port = atoi(port1) * 256 + atoi(port2);
+	strcpy(rptr->dataDomain, ip);
+	//strcpy(rptr->dataPort, itoa(port));
+	sprintf(rptr->dataPort, "%d", port);
+	printf("\n - Data Domain: %s:%d\n", ip, port);
+}
+
+
+/* buildResponse()
+ * This function will use the build a HTTP 200 response for FTP 
+ */
+void buildResponse(struct HttpOK * r){
+	char week[7][3];
+	strcpy(week[0], "Sun") ; 
+	strcpy(week[1], "Mon") ; 
+	strcpy(week[2], "Tue") ; 
+	strcpy(week[3], "Wed") ; 
+	strcpy(week[4], "Thu") ; 
+	strcpy(week[5], "Fri") ; 
+	strcpy(week[6], "Sat") ; 
+
+	char month[13][3];
+	strcpy(month[1], "Jan") ; 
+	strcpy(month[2], "Feb") ; 
+	strcpy(month[3], "Mar") ; 
+	strcpy(month[4], "Apr") ; 
+	strcpy(month[5], "May") ; 
+	strcpy(month[6], "Jun") ; 
+	strcpy(month[7], "Jul") ; 
+	strcpy(month[8], "Aug") ; 
+	strcpy(month[9], "Sep") ; 
+	strcpy(month[10], "Oct") ; 
+	strcpy(month[11], "Nov") ; 
+	strcpy(month[12], "Dec") ; 
+	
+	/* HTTP/1.1 200 OK */
+	strcpy(r->fullresponse, "HTTP/1.1 ");
+	strcat(r->fullresponse, r->code);
+	strcat(r->fullresponse, " OK\r\n");
+
+	time(&r->rawtime);
+	r->info = gmtime(&r->rawtime);
+	
+	
+	/* Date: Mon, 20 Nov 2016 10:28:53 GMT */
+	char date[30];
+	sprintf(date, "Date: %s, %d %s 2016 ", week[r->info->tm_wday], r->info->tm_mday, month[r->info->tm_mon], r->info->tm_year+1900);
+	strcat(r->fullresponse, date);
+	char time[20];
+	sprintf(time, "%d:%d:%d GMT\r\n", r->info->tm_hour, r->info->tm_min, r->info->tm_sec);
+	strcat(r->fullresponse, time);
+	strcat(r->fullresponse, "Server: Apache/2.2.14 (Win32)\r\n");
+	strcat(r->fullresponse, "Via: 1.1 DD\r\n");
+	strcat(r->fullresponse, "Last-Modified: Wed, 22 Jul 2009 19:15:56 GMT\r\n");
+	strcat(r->fullresponse, "Content-Length: 12143501\r\n");
+	strcat(r->fullresponse, "Content-Type: application/octet-stream\r\n");
+	strcat(r->fullresponse, "Connection: Closed\r\n");
+}
+
+
+
