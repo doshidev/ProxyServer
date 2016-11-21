@@ -177,13 +177,22 @@ int main(int argc, char **argv){
 					bzero(&comm, sizeof(comm));
 					strcpy(comm.cmd, "PASS user@example.com\r\n");
 					talk(&comm, req);
+
+					/* TYPE I */
+					bzero(&comm, sizeof(comm));
+					strcpy(comm.cmd, "TYPE I\r\n");
+					talk(&comm, req);
 					
 					/* SIZE */
+					struct HttpOK h;
+					strcpy(h.code, "200");
+
 					bzero(&comm, sizeof(comm));
 					strcpy(comm.cmd, "SIZE /");
 					strcat(comm.cmd, req->reqFile);
 					strcat(comm.cmd, "\r\n");
 					talk(&comm, req);
+					strcpy(h.length, comm.rtext);
 					
 
 					/* PASV */
@@ -215,13 +224,28 @@ int main(int argc, char **argv){
 					strcat(comm.cmd, "\r\n");
 					talk(&comm, req);
 
-					struct HttpOK h;
-					buildResponse(&h);
-					printf("HTTP: %s\n", h.fullresponse);
+					//buildResponse(&h);
+					//printf("HTTP Response:\n%s\n", h.fullresponse);
 					
-					write(req->browserfd, &h.fullresponse, strlen(h.fullresponse));
+					//write(req->browserfd, &h.fullresponse, strlen(h.fullresponse));
 					rw(req, req->datafd);	
 
+					char lastresponse[2000];
+					read(req->serverfd, lastresponse, 10000000);
+					printf("LR: %s\n", lastresponse);
+					if(strncmp(lastresponse, "226", 3) == 0){
+						unsigned char e1 = 0xff;
+						unsigned char e2 = 0x2;
+						//write(req->browserfd, &e1, 1);
+						//write(req->browserfd, &e2, 1);
+						printf("Closing datafd....\n");
+						
+						bzero(&comm, sizeof(comm));
+						strcpy(comm.cmd, "QUIT\r\n");
+						close(req->datafd);
+						talk(&comm, req);
+						close(req->browserfd);
+					}
 				} // else if "ftp"
 
 			} // if "GET"
@@ -392,20 +416,22 @@ int sendr(struct Request* rptr){
  */
 void rw(struct Request* rptr, int rfd){
 	rptr->resrecd = 0;
+	int totalread = 0;
 	if(sel(rfd) > 0 && selw(rptr->browserfd) > 0){
 		again:
 		do {    
 	    	bzero(rptr->resBuf, strlen(rptr->resBuf));
 	    	rptr->resrecd = read(rfd, rptr->resBuf, 10000000);
-			// printf("%s\n", rptr->resBuf);
-			printf(" [r: %d] ", rptr->resrecd);
+			totalread += rptr->resrecd;
+			
+			//printf(" [r: %d] ", rptr->resrecd);
 			write(rptr->browserfd, &rptr->resBuf, rptr->resrecd);
 			if (rptr->resrecd < 0 && errno == EINTR)
 				goto again;
 			else if (rptr->resrecd < 0)
 				printf("Read Error: %d\n", errno); 
 		} while(rptr->resrecd > 0);// End While
-		printf("\n");
+		printf("[Total Read: %d]\n\n", totalread);
 	}
 }
 
@@ -491,7 +517,7 @@ int talk(struct Command* ftpcmd, struct Request* rptr){
 			break;
 			return -1;
 		}
-		// printf("Response: %s", rstring);
+		printf("Response: %s", rstring);
 		memcpy(check1, rstring, 3);	
 		for(i = 0; i < strlen(rstring); i++){
 			if(rstring[i] == ' '){
@@ -522,7 +548,7 @@ int talk(struct Command* ftpcmd, struct Request* rptr){
  * @param struct Request * rptr
  */
 int parsePasv(struct Command* ftpcmd, struct Request* rptr){
-	int i = 0, start, count = 0, port = 0;
+	int i = 0, start = 0, count = 0, port = 0;
 	char ip[20];
 	char octet[4];
 	char port1[4], port2[4];
@@ -570,29 +596,30 @@ int parsePasv(struct Command* ftpcmd, struct Request* rptr){
  * This function will use the build a HTTP 200 response for FTP 
  */
 void buildResponse(struct HttpOK * r){
-	char week[7][3];
-	strcpy(week[0], "Sun") ; 
-	strcpy(week[1], "Mon") ; 
-	strcpy(week[2], "Tue") ; 
-	strcpy(week[3], "Wed") ; 
-	strcpy(week[4], "Thu") ; 
-	strcpy(week[5], "Fri") ; 
-	strcpy(week[6], "Sat") ; 
+	char w[7][3];
+	strcpy(w[0], "Sun") ; 
+	strcpy(w[1], "Mon") ; 
+	strcpy(w[2], "Tue") ; 
+	strcpy(w[3], "Wed") ; 
+	strcpy(w[4], "Thu") ; 
+	strcpy(w[5], "Fri") ; 
+	strcpy(w[6], "Sat") ; 
 
-	char month[13][3];
-	strcpy(month[1], "Jan") ; 
-	strcpy(month[2], "Feb") ; 
-	strcpy(month[3], "Mar") ; 
-	strcpy(month[4], "Apr") ; 
-	strcpy(month[5], "May") ; 
-	strcpy(month[6], "Jun") ; 
-	strcpy(month[7], "Jul") ; 
-	strcpy(month[8], "Aug") ; 
-	strcpy(month[9], "Sep") ; 
-	strcpy(month[10], "Oct") ; 
-	strcpy(month[11], "Nov") ; 
-	strcpy(month[12], "Dec") ; 
-	
+	char m[13][3];
+	strcpy(m[1], "Jan") ; 
+	strcpy(m[2], "Feb") ; 
+	strcpy(m[3], "Mar") ; 
+	strcpy(m[4], "Apr") ; 
+	strcpy(m[5], "May") ; 
+	strcpy(m[6], "Jun") ; 
+	strcpy(m[7], "Jul") ; 
+	strcpy(m[8], "Aug") ; 
+	strcpy(m[9], "Sep") ; 
+	strcpy(m[10], "Oct") ; 
+	strcpy(m[11], "Nov") ; 
+	strcpy(m[12], "Dec") ; 
+	char len[20];
+
 	/* HTTP/1.1 200 OK */
 	strcpy(r->fullresponse, "HTTP/1.1 ");
 	strcat(r->fullresponse, r->code);
@@ -604,7 +631,7 @@ void buildResponse(struct HttpOK * r){
 	
 	/* Date: Mon, 20 Nov 2016 10:28:53 GMT */
 	char date[30];
-	sprintf(date, "Date: %s, %d %s 2016 ", week[r->info->tm_wday], r->info->tm_mday, month[r->info->tm_mon], r->info->tm_year+1900);
+	sprintf(date, "Date: %c%c%c, %d %c%c%c %d ", w[r->info->tm_wday][0],w[r->info->tm_wday][1],w[r->info->tm_wday][2], r->info->tm_mday, m[r->info->tm_mon][0],m[r->info->tm_mon][1],m[r->info->tm_mon][2], r->info->tm_year+1900);
 	strcat(r->fullresponse, date);
 	char time[20];
 	sprintf(time, "%d:%d:%d GMT\r\n", r->info->tm_hour, r->info->tm_min, r->info->tm_sec);
@@ -612,8 +639,12 @@ void buildResponse(struct HttpOK * r){
 	strcat(r->fullresponse, "Server: Apache/2.2.14 (Win32)\r\n");
 	strcat(r->fullresponse, "Via: 1.1 DD\r\n");
 	strcat(r->fullresponse, "Last-Modified: Wed, 22 Jul 2009 19:15:56 GMT\r\n");
-	strcat(r->fullresponse, "Content-Length: 12143501\r\n");
-	strcat(r->fullresponse, "Content-Type: application/octet-stream\r\n");
+	strcat(r->fullresponse, "Accept-Ranges: bytes\r\n");
+	strcat(r->fullresponse, "Content-Length: ");
+	sprintf(len, "%d\r\n", atoi(r->length));
+	strcat(r->fullresponse, len);
+	//strcat(r->fullresponse, "Content-Type: application/x-gzip; charset=UTF-8\r\n");
+	strcat(r->fullresponse, "Content-Type: application/octet-stream; charset=binary\r\n");
 	strcat(r->fullresponse, "Connection: Closed\r\n");
 }
 
