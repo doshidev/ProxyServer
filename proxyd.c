@@ -59,7 +59,7 @@ struct HttpOK {
    	char length[20];
    	char contenttype[50];
    	char modified[20];
-   	char fullresponse[200];
+   	char fullresponse[2000];
 };
 
 int checkPort(int proxyPort); 
@@ -195,7 +195,6 @@ int main(int argc, char **argv){
 									strcat(comm.cmd, "\r\n");
 									talk(&comm, req);
 									strcpy(h.length, comm.rtext);
-										
 
 									/* PASV */
 									bzero(&comm, sizeof(comm));
@@ -234,16 +233,16 @@ int main(int argc, char **argv){
 											printf("HTTP Response:\n%s\n", h.fullresponse);
 											
 											write(req->browserfd, &h.fullresponse, strlen(h.fullresponse));
-											rw(req, req->datafd);	
+											rw(req, req->datafd);
 
 											char lastresponse[2000];
 											read(req->serverfd, lastresponse, 10000000);
 											printf("LR: %s\n", lastresponse);
 											if(strncmp(lastresponse, "226", 3) == 0){
-												unsigned char e1 = 0xff;
-												unsigned char e2 = 0x2;
-												write(req->browserfd, &e1, 1);
-												write(req->browserfd, &e2, 1);
+												// unsigned char e1 = 0xff;
+												// unsigned char e2 = 0x2;
+												//write(req->browserfd, &e1, 1);
+												//write(req->browserfd, &e2, 1);
 												printf("Closing datafd....\n");
 												
 												bzero(&comm, sizeof(comm));
@@ -456,11 +455,12 @@ void rw(struct Request* rptr, int rfd){
 	if(sel(rfd) > 0 && selw(rptr->browserfd) > 0){
 		again:
 		do {    
-	    	bzero(rptr->resBuf, strlen(rptr->resBuf));
+	    	bzero(rptr->resBuf, sizeof(rptr->resBuf));
 	    	rptr->resrecd = read(rfd, rptr->resBuf, 10000000);
 			totalread += rptr->resrecd;
 			
-			//printf(" [r: %d] ", rptr->resrecd);
+			// printf(" [r: %d] ", rptr->resrecd);
+			// printf("%s", rptr->resBuf);
 			write(rptr->browserfd, &rptr->resBuf, rptr->resrecd);
 			if (rptr->resrecd < 0 && errno == EINTR)
 				goto again;
@@ -476,7 +476,6 @@ void rw(struct Request* rptr, int rfd){
  * @param int fd
  */
 int sel(int fd){
-	return 1;
 	int fdplus, rv = 0;
 	fd_set myfdset;
 	struct timeval tv;
@@ -663,8 +662,7 @@ void buildResponse(struct HttpOK * r){
 
 	time(&r->rawtime);
 	r->info = gmtime(&r->rawtime);
-	
-	
+		
 	/* Date: Mon, 20 Nov 2016 10:28:53 GMT */
 	char date[30];
 	// sprintf(date, "Date: %c%c%c, %d %c%c%c %d ", w[r->info->tm_wday][0],w[r->info->tm_wday][1],w[r->info->tm_wday][2], r->info->tm_mday, m[r->info->tm_mon][0],m[r->info->tm_mon][1],m[r->info->tm_mon][2], r->info->tm_year+1900);
@@ -677,10 +675,9 @@ void buildResponse(struct HttpOK * r){
 	// strcat(r->fullresponse, "Via: 1.1 DD\r\n");
 	strcat(r->fullresponse, "Last-Modified: Wed, 22 Jul 2009 19:15:56 GMT\r\n");
 	strcat(r->fullresponse, "Accept-Ranges: bytes\r\n");
-	// strcat(r->fullresponse, "Content-Length: ");
-	// sprintf(len, "%d\r\n", atoi(r->length));
-	// strcat(r->fullresponse, len);
+	strcat(r->fullresponse, "Content-Length: ");
+	sprintf(len, "%d\r\n", atoi(r->length));
+	strcat(r->fullresponse, len);
 	strcat(r->fullresponse, "Content-Type: application/octet-stream; charset=binary\r\n");
-	strcat(r->fullresponse, "Connection: Closed\r\n");
+	strcat(r->fullresponse, "Connection: Closed\r\n\r\n");
 }
-
