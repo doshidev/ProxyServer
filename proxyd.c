@@ -164,88 +164,124 @@ int main(int argc, char **argv){
 					printf("\n> FTP Response: %s\n", ftpresponse);
 
 					/* TODO: check if response is 220? */
-
-					/* USER */
-					struct Command comm;
-					bzero(&comm, sizeof(comm));
-					strcpy(comm.cmd, "USER anonymous\r\n");
-					talk(&comm, req);
-
-					/* TODO: check response codes */
-
-					/* PASSWORD */
-					bzero(&comm, sizeof(comm));
-					strcpy(comm.cmd, "PASS user@example.com\r\n");
-					talk(&comm, req);
-
-					/* TYPE I */
-					bzero(&comm, sizeof(comm));
-					strcpy(comm.cmd, "TYPE I\r\n");
-					talk(&comm, req);
-					
-					/* SIZE */
-					struct HttpOK h;
-					strcpy(h.code, "200");
-
-					bzero(&comm, sizeof(comm));
-					strcpy(comm.cmd, "SIZE /");
-					strcat(comm.cmd, req->reqFile);
-					strcat(comm.cmd, "\r\n");
-					talk(&comm, req);
-					strcpy(h.length, comm.rtext);
-					
-
-					/* PASV */
-					bzero(&comm, sizeof(comm));
-					strcpy(comm.cmd, "PASV\r\n");
-					talk(&comm, req);
-					parsePasv(&comm, req);
-
-					/* Get Addr Info */
-					int gainfo1 = getai(req, 'd');
-					if(gainfo1 != 0){
-						printf("Get Address Info failed\n");
-						close(req->browserfd);			
-						break;
-					}
-					printf("\n> Data Get Address Info successful\n");
-					/* Connect to Data Server */
-					req->datafd = connectServer(req->dataInetAddr->ai_addr, req->dataInetAddr->ai_addrlen);			
-					if(req->datafd == -1){
-						printf("Connection to Data server failed\n");
-						close(req->browserfd);			
-						break;
-					}
-
-					/* RETR */
-					bzero(&comm, sizeof(comm));
-					strcpy(comm.cmd, "RETR /");
-					strcat(comm.cmd, req->reqFile);
-					strcat(comm.cmd, "\r\n");
-					talk(&comm, req);
-
-					//buildResponse(&h);
-					//printf("HTTP Response:\n%s\n", h.fullresponse);
-					
-					//write(req->browserfd, &h.fullresponse, strlen(h.fullresponse));
-					rw(req, req->datafd);	
-
-					char lastresponse[2000];
-					read(req->serverfd, lastresponse, 10000000);
-					printf("LR: %s\n", lastresponse);
-					if(strncmp(lastresponse, "226", 3) == 0){
-						unsigned char e1 = 0xff;
-						unsigned char e2 = 0x2;
-						//write(req->browserfd, &e1, 1);
-						//write(req->browserfd, &e2, 1);
-						printf("Closing datafd....\n");
-						
+					if(strncmp(ftpresponse, "220", 3) == 0){
+						/* USER */
+						struct Command comm;
 						bzero(&comm, sizeof(comm));
-						strcpy(comm.cmd, "QUIT\r\n");
-						close(req->datafd);
+						strcpy(comm.cmd, "USER anonymous\r\n");
 						talk(&comm, req);
+
+						if(strcmp(comm.rcode, "331") == 0 || strcmp(comm.rcode, "230") == 0){
+
+							/* PASSWORD */
+							bzero(&comm, sizeof(comm));
+							strcpy(comm.cmd, "PASS user@example.com\r\n");
+							talk(&comm, req);
+
+							if(strcmp(comm.rcode, "230") == 0){
+								/* TYPE I */
+								bzero(&comm, sizeof(comm));
+								strcpy(comm.cmd, "TYPE I\r\n");
+								talk(&comm, req);
+								
+								if(strcmp(comm.rcode, "200") == 0){
+									/* SIZE */
+									struct HttpOK h;
+									strcpy(h.code, "200");
+
+									bzero(&comm, sizeof(comm));
+									strcpy(comm.cmd, "SIZE /");
+									strcat(comm.cmd, req->reqFile);
+									strcat(comm.cmd, "\r\n");
+									talk(&comm, req);
+									strcpy(h.length, comm.rtext);
+										
+
+									/* PASV */
+									bzero(&comm, sizeof(comm));
+									strcpy(comm.cmd, "PASV\r\n");
+									talk(&comm, req);
+									
+									if(strcmp(comm.rcode, "227") == 0){
+										/* Parse PASV Response*/
+										parsePasv(&comm, req);
+
+										/* Get Addr Info */
+										int gainfo1 = getai(req, 'd');
+										if(gainfo1 != 0){
+											printf("Get Address Info failed\n");
+											close(req->browserfd);			
+											break;
+										}
+										printf("\n> Data Get Address Info successful\n");
+										/* Connect to Data Server */
+										req->datafd = connectServer(req->dataInetAddr->ai_addr, req->dataInetAddr->ai_addrlen);			
+										if(req->datafd == -1){
+											printf("Connection to Data server failed\n");
+											close(req->browserfd);			
+											break;
+										}
+
+										/* RETR */
+										bzero(&comm, sizeof(comm));
+										strcpy(comm.cmd, "RETR /");
+										strcat(comm.cmd, req->reqFile);
+										strcat(comm.cmd, "\r\n");
+										talk(&comm, req);
+
+										if(strcmp(comm.rcode, "150") == 0 || strcmp(comm.rcode, "125") == 0){
+											buildResponse(&h);
+											printf("HTTP Response:\n%s\n", h.fullresponse);
+											
+											write(req->browserfd, &h.fullresponse, strlen(h.fullresponse));
+											rw(req, req->datafd);	
+
+											char lastresponse[2000];
+											read(req->serverfd, lastresponse, 10000000);
+											printf("LR: %s\n", lastresponse);
+											if(strncmp(lastresponse, "226", 3) == 0){
+												unsigned char e1 = 0xff;
+												unsigned char e2 = 0x2;
+												write(req->browserfd, &e1, 1);
+												write(req->browserfd, &e2, 1);
+												printf("Closing datafd....\n");
+												
+												bzero(&comm, sizeof(comm));
+												strcpy(comm.cmd, "QUIT\r\n");
+												close(req->datafd);
+												talk(&comm, req);
+												close(req->browserfd);
+											}
+										} else {
+											printf("Request Failed: RETR failed!!!\n");
+											close(req->browserfd);
+										} // RETR
+
+											
+									} else {
+										printf("Request Failed: PASV Failed!!!\n");
+										close(req->browserfd);	
+									} // PASV
+
+														
+								} else {
+									printf("Request Failed: TYPE I failed!!!\n");
+									close(req->browserfd);	
+								} // TYPE I
+										
+							} else {
+								printf("Request Failed: Authentication failed!!!\n");
+								close(req->browserfd);	
+							} // PASS
+								
+						} else {
+							printf("Request Failed: USER failed!!!\n");
+							close(req->browserfd);
+						} // USER
+					} else {
+						printf("Request Failed: FTP server not ready!!!\n");
 						close(req->browserfd);
-					}
+					} // 220: Server not ready
 				} // else if "ftp"
 
 			} // if "GET"
@@ -435,12 +471,12 @@ void rw(struct Request* rptr, int rfd){
 	}
 }
 
-
 /* sel()
  * This function will use the select function to check if the fd is ready to read/write 
  * @param int fd
  */
 int sel(int fd){
+	return 1;
 	int fdplus, rv = 0;
 	fd_set myfdset;
 	struct timeval tv;
@@ -517,7 +553,7 @@ int talk(struct Command* ftpcmd, struct Request* rptr){
 			break;
 			return -1;
 		}
-		printf("Response: %s", rstring);
+		// printf("Response: %s", rstring);
 		memcpy(check1, rstring, 3);	
 		for(i = 0; i < strlen(rstring); i++){
 			if(rstring[i] == ' '){
@@ -631,22 +667,20 @@ void buildResponse(struct HttpOK * r){
 	
 	/* Date: Mon, 20 Nov 2016 10:28:53 GMT */
 	char date[30];
-	sprintf(date, "Date: %c%c%c, %d %c%c%c %d ", w[r->info->tm_wday][0],w[r->info->tm_wday][1],w[r->info->tm_wday][2], r->info->tm_mday, m[r->info->tm_mon][0],m[r->info->tm_mon][1],m[r->info->tm_mon][2], r->info->tm_year+1900);
-	strcat(r->fullresponse, date);
-	char time[20];
-	sprintf(time, "%d:%d:%d GMT\r\n", r->info->tm_hour, r->info->tm_min, r->info->tm_sec);
-	strcat(r->fullresponse, time);
+	// sprintf(date, "Date: %c%c%c, %d %c%c%c %d ", w[r->info->tm_wday][0],w[r->info->tm_wday][1],w[r->info->tm_wday][2], r->info->tm_mday, m[r->info->tm_mon][0],m[r->info->tm_mon][1],m[r->info->tm_mon][2], r->info->tm_year+1900);
+	strcat(r->fullresponse,"Date: Mon, 20 Nov 2016 10:28:53 GMT\r\n");
+	// strcat(r->fullresponse, date);
+	// char time[20];
+	// sprintf(time, "%d:%d:%d GMT\r\n", r->info->tm_hour, r->info->tm_min, r->info->tm_sec);
+	// strcat(r->fullresponse, time);
 	strcat(r->fullresponse, "Server: Apache/2.2.14 (Win32)\r\n");
-	strcat(r->fullresponse, "Via: 1.1 DD\r\n");
+	// strcat(r->fullresponse, "Via: 1.1 DD\r\n");
 	strcat(r->fullresponse, "Last-Modified: Wed, 22 Jul 2009 19:15:56 GMT\r\n");
 	strcat(r->fullresponse, "Accept-Ranges: bytes\r\n");
-	strcat(r->fullresponse, "Content-Length: ");
-	sprintf(len, "%d\r\n", atoi(r->length));
-	strcat(r->fullresponse, len);
-	//strcat(r->fullresponse, "Content-Type: application/x-gzip; charset=UTF-8\r\n");
+	// strcat(r->fullresponse, "Content-Length: ");
+	// sprintf(len, "%d\r\n", atoi(r->length));
+	// strcat(r->fullresponse, len);
 	strcat(r->fullresponse, "Content-Type: application/octet-stream; charset=binary\r\n");
 	strcat(r->fullresponse, "Connection: Closed\r\n");
 }
-
-
 
